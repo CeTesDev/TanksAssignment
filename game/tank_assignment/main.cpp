@@ -82,7 +82,7 @@ Vector3f ballPosition;              // current ball position
 bool loadMaze()
 {
 	// Open file
-	std::ifstream file("maze.txt");
+    std::ifstream file("../models/maze.txt");
 	if(!file)
 	{
 		std::cout << "Error opening maze.txt" << std::endl;
@@ -105,7 +105,7 @@ bool loadMaze()
 void loadShaders()
 {
 	// Create shaders
-	shaderProgramID = Shader::LoadFromFile("shader.vert", "shader.frag");
+    shaderProgramID = Shader::LoadFromFile("../models/shader.vert", "../models/shader.frag");
 
 	// Get vertex attributes
 	vertexPositionAttribute = glGetAttribLocation(shaderProgramID, "aVertexPosition");

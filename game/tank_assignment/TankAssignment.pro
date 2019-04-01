@@ -28,8 +28,10 @@ INCLUDEPATH += 	./ 				    \
 		        ../common/ 			\
 
 		
+DEFINES += M_PI=3.141592653589793
+
 #Library Libraries
-LIBS +=	-L/usr/lib/nvidia-352/                  \
-        -lGLEW			    	    	        \
-		-lglut			        		        \
-        -lGL             	                  	\  
+LIBS += ..\lib\freeglutd.lib
+LIBS += ..\lib\opengl32.lib
+LIBS += ..\lib\glut32.lib
+LIBS += ..\lib\glew32.lib

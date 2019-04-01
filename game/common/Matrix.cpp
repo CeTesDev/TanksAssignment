@@ -2,7 +2,6 @@
 #include <Vector.h>
 #include <iostream>
 #include <math.h>
-#define M_PI 3.141592
 
 //!Constructor
 Matrix4x4::Matrix4x4()
