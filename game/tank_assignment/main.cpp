@@ -21,34 +21,51 @@ void mouse(int button, int state, int x, int y);
 void motion(int x, int y);
 void Timer(int value);
 
+// Object sizes
+const float cubeSize = 10;
+const float coinSize = 1;
+const float ballSize = 0.3f;
+
 // Screen size
 int screenWidth  = 720;
 int screenHeight = 720;
 
-// Array of key states
-bool keyStates[256];
+// Maze dimensions and integer matrix
+const int N = 8;       // rows
+const int M = 10;      // columns
+std::vector<int> maze; // MxN matrix
 
-// Maze dimensions and matrix
-const int N = 8;        // rows
-const int M = 10;       // columns
-std::vector<char> maze; // MxN matrix
+// Objects and texture IDs
+Mesh cube, coin, ball, chassis, backWheel, frontWheel, turret;
+GLuint cubeTextureID, tankTextureID, ballTextureID, coinTextureID;
 
-const float cubeSize = 8;
-const float coinSize = 1.5f;
-const float ballSize = 0.3f;
+// Tank properties
+Vector3f tankPosition;
+float tankDistanceTravelled = 0;
+float tankAngle = 0;
+float tankAcceleration = 0;
+float tankDeceleration = 0;
+float tankVelocity = 0;
+float tankAngleVelocity = 0;
+float tankFallVelocity = 0;
 
-Matrix4x4 ProjectionMatrix;                 // Projection Matrix
+// Ball properties
+Vector3f ballPosition;
+
+// Game properties
+SphericalCameraManipulator cameraManip;
+bool gameOver = false;
 
 // Shader variables
-GLuint shaderProgramID;                     // Shader Program ID
-GLuint MVMatrixUniformLocation;             // ModelView Matrix Uniform
-GLuint ProjectionUniformLocation;           // Projection Matrix Uniform
-GLuint TextureMapUniformLocation;           // Texture Map
+GLuint shaderProgramID;
+GLuint MVMatrixUniformLocation;
+GLuint ProjectionUniformLocation;
+GLuint TextureMapUniformLocation;
 
-// Vertex attributes
-GLuint vertexPositionAttribute;             // Vertex Position Attribute
-GLuint vertexNormalAttribute;               // Vertex Normal Attribute
-GLuint vertexTexcoordAttribute;             // Vertex Texcoord Attribute
+// Vertex attribute locations
+GLuint vertexPositionAttribute;
+GLuint vertexNormalAttribute;
+GLuint vertexTexcoordAttribute;
 
 // Light properties
 Vector3f lightPosition = Vector3f(0, 1, 1);
@@ -56,36 +73,45 @@ Vector3f ambient       = Vector3f(0.1f, 0.1f, 0.2f);
 Vector3f specular      = Vector3f(1.0f, 1.0f, 1.0f);
 float specularPower    = 50.0;
 
-// Light uniforms
+// Light uniform locations
 GLuint LightPositionUniformLocation;
 GLuint AmbientUniformLocation;
 GLuint SpecularUniformLocation;
 GLuint SpecularPowerUniformLocation;
 
-// Objects
-Mesh cube, coin, ball;
-Mesh chassis, backWheel, frontWheel, turret;
+// Array of key states
+bool keyStates[256];
 
-// Texture IDs
-GLuint cubeTextureID, tankTextureID, ballTextureID, coinTextureID;
+// Converting degrees to radians
+float degreesToRadians(float angle)
+{
+	return angle * (float)M_PI / 180;
+}
 
-float time = 0;         // current time in seconds
+// Converting radians to degrees
+float radiansToDegrees(float angle)
+{
+	return angle * 180 / (float)M_PI;
+}
 
-// Tank properties
-Vector3f tankPosition;              // current tank position
-float tankAngle = 0;                // current tank angle
+// Rotating around point
+void rotateAroundPoint(Matrix4x4 & matrix, const Vector3f & point, float xAngle, float yAngle)
+{
+    // Move to point, rotate, and move back
+	matrix.translate(point.x, point.y, point.z);
+	matrix.rotate(yAngle, 0, 1, 0);
+	matrix.rotate(xAngle, 1, 0, 0);
+	matrix.translate(-point.x, -point.y, -point.z);
+}
 
-// Ball properties
-Vector3f ballPosition;              // current ball position
-
-// Loading maze from a file
+// Loading maze from file
 bool loadMaze()
 {
 	// Open file
-    std::ifstream file("../models/maze.txt");
+	std::ifstream file("../models/maze.txt");
 	if(!file)
 	{
-		std::cout << "Error opening maze.txt" << std::endl;
+		std::cout << "Error opening ../models/maze.txt" << std::endl;
 		return false;
 	}
 
@@ -93,82 +119,64 @@ bool loadMaze()
 	char c = 0;
 	while(file >> c)
 	{
-		// Add matrix element
-		maze.push_back(c);
+		// Convert char to integer
+		maze.push_back(c - '0');
 	}
 
 	return true;
 }
 
+// Checking for blocks
+bool isBlock(int i, int j)
+{
+	// Bound checking
+	if(i < 0 || i > N - 1) return false;
+	if(j < 0 || j > M - 1) return false;
+	int index = i * M + j;
+	if(index < 0 || index > (int)maze.size()) return false;
+
+	// 1 or 2 indicates blocks
+	return maze[index] == 1 || maze[index] == 2;
+}
+
+// Checking for targets
+bool isTarget(int i, int j)
+{
+	// Bound checking
+	if(i < 0 || i > N - 1) return false;
+	if(j < 0 || j > M - 1) return false;
+	int index = i * M + j;
+	if(index < 0 || index > (int)maze.size()) return false;
+
+	// 2 indicates targets
+	return maze[index] == 2;
+}
 
 // Loading shaders
 void loadShaders()
 {
-	// Create shaders
-    shaderProgramID = Shader::LoadFromFile("../models/shader.vert", "../models/shader.frag");
+	// Create shader
+	shaderProgramID = Shader::LoadFromFile("../models/shader.vert", "../models/shader.frag");
 
-	// Get vertex attributes
+	// Get vertex attribute locations
 	vertexPositionAttribute = glGetAttribLocation(shaderProgramID, "aVertexPosition");
-	vertexNormalAttribute   = glGetAttribLocation(shaderProgramID, "aVertexNormal");
+	vertexNormalAttribute = glGetAttribLocation(shaderProgramID,   "aVertexNormal");
 	vertexTexcoordAttribute = glGetAttribLocation(shaderProgramID, "aVertexTexcoord");
 
-	// Get uniforms
+	// Get uniforms locations
 	MVMatrixUniformLocation      = glGetUniformLocation(shaderProgramID, "MVMatrix_uniform");
 	ProjectionUniformLocation    = glGetUniformLocation(shaderProgramID, "ProjMatrix_uniform");
-	LightPositionUniformLocation = glGetUniformLocation(shaderProgramID, "LightPosition_uniform"); 
-	AmbientUniformLocation       = glGetUniformLocation(shaderProgramID, "Ambient_uniform"); 
-	SpecularUniformLocation      = glGetUniformLocation(shaderProgramID, "Specular_uniform"); 
+	LightPositionUniformLocation = glGetUniformLocation(shaderProgramID, "LightPosition_uniform");
+	AmbientUniformLocation       = glGetUniformLocation(shaderProgramID, "Ambient_uniform");
+	SpecularUniformLocation      = glGetUniformLocation(shaderProgramID, "Specular_uniform");
 	SpecularPowerUniformLocation = glGetUniformLocation(shaderProgramID, "SpecularPower_uniform");
 	TextureMapUniformLocation    = glGetUniformLocation(shaderProgramID, "Texture_uniform");
-}
-
-void initTexture(std::string filename, GLuint & textureID)
-{
-	// Generate texture and bind
-	glGenTextures(1, &textureID);
-	glBindTexture(GL_TEXTURE_2D, textureID);
-
-	// Set texture parameters
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); 
-
-	// Get texture Data
-	int width = 0, height = 0;
-	char* data = 0;
-	Texture::LoadBMP(filename, width, height, data);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-	glBindTexture(GL_TEXTURE_2D, 0);
-
-	// Cleanup data - copied to GPU
-	delete[] data;
-}
-
-
-// Applying matrix 
-void applyMatrix(Matrix4x4 matrix)
-{
-	// View matrix
-	Matrix4x4 m;
-	m.translate(cubeSize * -6, cubeSize * 2, cubeSize * -8);
-	m.rotate(20, 1, 0, 0);
-
-	// Model matrix
-	m = m * matrix;
-
-	// Set modelview matrix
-	glUniformMatrix4fv(
-		MVMatrixUniformLocation, // Uniform location
-		1,                       // Number of Uniforms
-		false,                   // Transpose Matrix
-		m.getPtr());             // Pointer to Matrix Values
 }
 
 
 // Main Program Entry
 int main(int argc, char** argv)
-{	
+{
 	// Init OpenGL
 	if(!initGL(argc, argv))
 		return -1;
@@ -189,17 +197,20 @@ int main(int argc, char** argv)
 	turret.loadOBJ("../models/turret.obj");
 
 	// Load textures
-	initTexture("../models/crate.bmp", cubeTextureID);
-	initTexture("../models/coin.bmp", coinTextureID);
-	initTexture("../models/ball.bmp", ballTextureID);
-	initTexture("../models/hamvee.bmp", tankTextureID);
+	cubeTextureID = Texture::LoadBMP("../models/crate.bmp");
+	coinTextureID = Texture::LoadBMP("../models/coin.bmp");
+	ballTextureID = Texture::LoadBMP("../models/ball.bmp");
+	tankTextureID = Texture::LoadBMP("../models/hamvee.bmp");
 
 	// Load OpenGL shaders
 	loadShaders();
 
 	tankPosition = Vector3f(cubeSize * (M - 1) * 0.7f, 0, cubeSize * (N - 1));
-	tankAngle = -90;
+	tankAngle = 180;
 	ballPosition = Vector3f(cubeSize * (M - 1) * 0.6f, cubeSize * 0.3f, cubeSize * (N - 1));
+
+	// Set up camera manipulator
+	cameraManip.setPanTiltRadius(0.f,0.f,5.f);
 
 	// Enter main loop
 	glutMainLoop();
@@ -210,7 +221,7 @@ int main(int argc, char** argv)
 	return 0;
 }
 
-// Function to Initlise OpenGL
+// Function to initialise OpenGL
 bool initGL(int argc, char** argv)
 {
 	// Init GLUT
@@ -229,29 +240,88 @@ bool initGL(int argc, char** argv)
 	glutCreateWindow("Tank Assignment");
 
 	// Init GLEW
-	if (glewInit() != GLEW_OK) 
+	if(glewInit() != GLEW_OK)
 	{
 		std::cout << "Failed to initialize GLEW" << std::endl;
 		return false;
 	}
-	
+
 	// Set Display function
 	glutDisplayFunc(display);
-	
+
 	// Set Keyboard Interaction Functions
 	glutKeyboardFunc(keyboard);
-	glutKeyboardUpFunc(keyUp); 
+	glutKeyboardUpFunc(keyUp);
 
 	// Set Mouse Interaction Functions
 	glutMouseFunc(mouse);
 	glutPassiveMotionFunc(motion);
 	glutMotionFunc(motion);
 
-	// Start start timer function after 100 milliseconds
+	// Start timer function after 100 milliseconds
 	glutTimerFunc(100, Timer, 0);
 
 	glEnable(GL_DEPTH_TEST);
 	return true;
+}
+
+// Updating tank properties
+void updateTank(float timeStep)
+{
+	// Tank direction
+	Vector3f TankDirection(sinf(degreesToRadians(tankAngle)), 0, cosf(degreesToRadians(tankAngle)));
+
+	// Update tank velocity according to acceleration
+	tankVelocity += (tankAcceleration - tankDeceleration) * timeStep;
+	if(tankVelocity > 15) tankVelocity = 15;
+	if(tankVelocity < -15) tankVelocity = -15;
+
+	// Update tank angle
+	tankAngle += tankAngleVelocity * (tankVelocity < 0 ? -1 : 1) * timeStep;
+
+	// Update tank falling velocity
+	if(gameOver)
+	{
+		const float gravity = -30;
+		tankFallVelocity += gravity * timeStep;
+	}
+
+	// Update tank position according to movement and falling
+	tankPosition = tankPosition + TankDirection * tankVelocity * timeStep;
+	tankPosition.y = tankPosition.y + tankFallVelocity * timeStep;
+
+	// Update distance travelled
+	tankDistanceTravelled += tankVelocity * timeStep;
+
+	// Convert tank position to maze coordinates
+	int i = (int)floorf(tankPosition.z / cubeSize + 0.5f);
+	int j = (int)floorf(tankPosition.x / cubeSize + 0.5f);
+
+	// If tank position is not over block, it should fall
+	if(!isBlock(i, j)) gameOver = true;
+}
+
+// Drawing mesh
+void drawMesh(Mesh & mesh, Matrix4x4 & matrix, GLuint textureID)
+{
+	// View matrix
+	Matrix4x4 m;
+	m.translate(cubeSize * -6, cubeSize * 2, cubeSize * -8);
+	m.rotate(20, 1, 0, 0);
+
+	// Model matrix
+	m = m * matrix;
+
+	// Set modelview matrix
+	glUniformMatrix4fv(
+		MVMatrixUniformLocation, // Uniform location
+		1,                       // Number of Uniforms
+		false,                   // Transpose Matrix
+		m.getPtr());             // Pointer to Matrix Values
+
+	// Set texture and draw mesh
+	glBindTexture(GL_TEXTURE_2D, textureID);
+	mesh.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
 }
 
 // Drawing cubes
@@ -261,18 +331,15 @@ void drawCubes()
 	for(int i = 0; i < N; i++)
 	for(int j = 0; j < M; j++)
 	{
-		// '1' or '2' indicates blocks
-		if(maze[i * M + j] > '0')
+		if(isBlock(i, j))
 		{
-			// Set cube position and size
+			// Cube position and size
 			Matrix4x4 m;
 			m.translate(cubeSize * j, -cubeSize * 0.5f + 0.5f, cubeSize * i);
 			m.scale(cubeSize * 0.5f, cubeSize * 0.5f, cubeSize * 0.5f);
-			applyMatrix(m);
 
 			// Draw cube
-			glBindTexture(GL_TEXTURE_2D, cubeTextureID);
-			cube.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
+			drawMesh(cube, m, cubeTextureID);
 		}
 	}
 }
@@ -284,18 +351,15 @@ void drawCoins()
 	for(int i = 0; i < N; i++)
 	for(int j = 0; j < M; j++)
 	{
-		// '2' indicates targets
-		if(maze[i * M + j] == '2')
+		if(isTarget(i, j))
 		{
-			// Set coin position and size
+			// Coin position and size
 			Matrix4x4 m;
-			m.translate(cubeSize * j, cubeSize, cubeSize * i);
+			m.translate(cubeSize * j, coinSize * 6 + 0.5f, cubeSize * i);
 			m.scale(coinSize, coinSize, coinSize);
-			applyMatrix(m);
 
 			// Draw coin
-			glBindTexture(GL_TEXTURE_2D, coinTextureID);
-			coin.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
+			drawMesh(coin, m, coinTextureID);
 		}
 	}
 }
@@ -303,32 +367,43 @@ void drawCoins()
 // Drawing ball
 void drawBall()
 {
-	// Set ball position and size
-	Matrix4x4 ballMatrix;
-	ballMatrix.translate(ballPosition.x, ballPosition.y, ballPosition.z);
-	ballMatrix.scale(ballSize, ballSize, ballSize);
-	applyMatrix(ballMatrix);
+	// Ball position and size
+	Matrix4x4 m;
+	m.translate(ballPosition.x, ballPosition.y, ballPosition.z);
+	m.scale(ballSize, ballSize, ballSize);
 
 	// Draw ball
-	glBindTexture(GL_TEXTURE_2D, ballTextureID);
-	ball.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
+	drawMesh(ball, m, ballTextureID);
 }
 
 // Drawing tank
 void drawTank()
 {
-	// Set tank position and direction
+	// Draw chassis
 	Matrix4x4 tankMatrix;
 	tankMatrix.translate(tankPosition.x, tankPosition.y, tankPosition.z);
 	tankMatrix.rotate(tankAngle, 0, 1, 0);
-	applyMatrix(tankMatrix);
+	drawMesh(chassis, tankMatrix, tankTextureID);
 
-	// Draw chassis, back wheel, front wheel, turret
-	glBindTexture(GL_TEXTURE_2D, tankTextureID);
-	chassis.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
-	backWheel.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
-	frontWheel.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
-	turret.Draw(vertexPositionAttribute, vertexNormalAttribute, vertexTexcoordAttribute);
+	// Wheel angle according to distance travelled
+	const float wheelRadius = 0.5f;
+	float wheelAngle = radiansToDegrees(tankDistanceTravelled / wheelRadius);
+
+	// Draw front wheel
+	Matrix4x4 frontWheelMatrix = tankMatrix;
+	rotateAroundPoint(frontWheelMatrix, frontWheel.getMeshCentroid(), wheelAngle, tankAngleVelocity * 0.15f);
+	drawMesh(frontWheel, frontWheelMatrix, tankTextureID);
+
+	// Draw back wheel
+	Matrix4x4 backWheelMatrix = tankMatrix;
+	rotateAroundPoint(backWheelMatrix, backWheel.getMeshCentroid(), wheelAngle, 0);
+	drawMesh(backWheel, backWheelMatrix, tankTextureID);
+
+	// Draw turret
+	Matrix4x4 turretMatrix = tankMatrix;
+	float turretAngle = radiansToDegrees(cameraManip.getPan()) - tankAngle - 90;
+	turretMatrix.rotate(turretAngle, 0, 1, 0);
+	drawMesh(turret, turretMatrix, tankTextureID);
 }
 
 // Display Loop
@@ -339,7 +414,7 @@ void display(void)
 
 	// Set Viewport
 	glViewport(0, 0, screenWidth, screenHeight);
-	
+
 	// Clear screen
 	glClearColor(0.4f, 0.5f, 0.6f, 1);
 	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
@@ -348,6 +423,7 @@ void display(void)
 	glUseProgram(shaderProgramID);
 
 	// Set perspective projection matrix
+	Matrix4x4 ProjectionMatrix;
 	ProjectionMatrix.perspective(90, 1.0f, 0.01f, 1000.0f);
 	glUniformMatrix4fv(
 		ProjectionUniformLocation,  // Uniform location
@@ -364,11 +440,11 @@ void display(void)
 	// Enable texture mapping
 	glUniform1i(TextureMapUniformLocation, 0);
 
-	// Draw scene
+	// Draw all meshes
 	drawCubes();
 	drawCoins();
 	drawTank();
-	drawBall();
+	//drawBall();
 
 	// Disable shader
 	glUseProgram(0);
@@ -382,7 +458,7 @@ void display(void)
 void keyboard(unsigned char key, int x, int y)
 {
 	// Quits program when esc is pressed
-	if (key == 27)	// esc key code
+	if(key == 27)	// esc key code
 	{
 		exit(0);
 	}
@@ -401,31 +477,33 @@ void keyUp(unsigned char key, int x, int y)
 // Handle Keys
 void handleKeys()
 {
-	// Keys should be handled here
-	if(keyStates['a'])
-	{
-	}
+	// Tank acceleration and deceleration
+	tankAcceleration = keyStates['w'] ? 50.0f : 0.0f;
+	tankDeceleration = keyStates['s'] ? 50.0f : 0.0f;
+
+	// Tank turning
+	tankAngleVelocity = 0;
+	if(keyStates['a']) tankAngleVelocity += 100.0f;
+	if(keyStates['d']) tankAngleVelocity -= 100.0f;
 }
 
 // Mouse Interaction
 void mouse(int button, int state, int x, int y)
 {
-	glutPostRedisplay();
 }
 
 // Motion
 void motion(int x, int y)
 {
-	glutPostRedisplay();
+	cameraManip.handleMouseMotion(x, y);
 }
 
 // Timer Function
 void Timer(int value)
 {
+	float timeStep = 0.01f;
+	updateTank(timeStep);
 
-	// Call function again after 10 milli seconds
+	// Call function again after 10 milliseconds
 	glutTimerFunc(10, Timer, 0);
 }
-
-
-
