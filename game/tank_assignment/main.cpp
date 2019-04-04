@@ -10,51 +10,76 @@
 #include <iostream>
 #include <math.h>
 #include <string>
-
-// Function Prototypes
-bool initGL(int argc, char** argv);
-void display(void);
-void keyboard(unsigned char key, int x, int y);
-void keyUp(unsigned char key, int x, int y);
-void handleKeys();
-void mouse(int button, int state, int x, int y);
-void motion(int x, int y);
-void Timer(int value);
-
-// Object sizes
-const float cubeSize = 10;
-const float coinSize = 1;
-const float ballSize = 0.3f;
-
-// Screen size
-int screenWidth  = 720;
-int screenHeight = 720;
+#include <sstream>
 
 // Maze dimensions and integer matrix
-const int N = 8;       // rows
-const int M = 10;      // columns
+const int N = 8;       // Rows
+const int M = 10;      // Columns
 std::vector<int> maze; // MxN matrix
+
+// Camera properties
+const float cameraHeight = 5;
+const float cameraDistance = 7;
+
+// Tank properties
+const float tankAcceleration = 100;
+const float tankDeceleration = 100;
+const float tankMaxVelocity = 25;
+const float tankFriction = 30;
+const float tankTurningRate = 100;
+
+// Cube properties
+const float cubeSize = 15;
+
+// Coin properties
+const float coinSize = 1;
+const float coinHeight = 2;
+
+// Ball properties
+const float ballSize = 0.4f;
+const float ballSpeed = 50;
+
+// Game properties
+int screenWidth  = 630;
+int screenHeight = 630;
+const float gravity = -30;
+
+// Light properties
+Vector3f lightPosition = Vector3f(0, 1, 1);
+Vector3f ambient       = Vector3f(0.1f, 0.1f, 0.2f);
+Vector3f specular      = Vector3f(1.0f, 1.0f, 1.0f);
+float specularPower    = 50.0f;
+
+// Tank variables
+Vector3f tankPosition;
+float tankDistanceTravelled = 0;
+float tankAngle = 0;
+float tankVelocity = 0;
+float tankFallVelocity = 0;
+float tankFallingTime = 0;
+bool tankAccelerating = false;
+bool tankDecelerating = false;
+bool tankTurningLeft = false;
+bool tankTurningRight = false;
+bool tankFalling = false;
+
+// Coin variables
+int totalCoins = 0;
+int collectedCoins = 0;
+
+// Ball variables
+bool shooting = false;
+Vector3f ballPosition, ballVelocity;
+
+// Game variables
+SphericalCameraManipulator cameraManip;
+float timeRemaining = 0;
+bool gameOver = false;
+std::string gameOverMessage;
 
 // Objects and texture IDs
 Mesh cube, coin, ball, chassis, backWheel, frontWheel, turret;
 GLuint cubeTextureID, tankTextureID, ballTextureID, coinTextureID;
-
-// Tank properties
-Vector3f tankPosition;
-float tankDistanceTravelled = 0;
-float tankAngle = 0;
-float tankAcceleration = 0;
-float tankDeceleration = 0;
-float tankVelocity = 0;
-float tankAngleVelocity = 0;
-float tankFallVelocity = 0;
-
-// Ball properties
-Vector3f ballPosition;
-
-// Game properties
-SphericalCameraManipulator cameraManip;
-bool gameOver = false;
 
 // Shader variables
 GLuint shaderProgramID;
@@ -67,12 +92,6 @@ GLuint vertexPositionAttribute;
 GLuint vertexNormalAttribute;
 GLuint vertexTexcoordAttribute;
 
-// Light properties
-Vector3f lightPosition = Vector3f(0, 1, 1);
-Vector3f ambient       = Vector3f(0.1f, 0.1f, 0.2f);
-Vector3f specular      = Vector3f(1.0f, 1.0f, 1.0f);
-float specularPower    = 50.0;
-
 // Light uniform locations
 GLuint LightPositionUniformLocation;
 GLuint AmbientUniformLocation;
@@ -81,6 +100,16 @@ GLuint SpecularPowerUniformLocation;
 
 // Array of key states
 bool keyStates[256];
+
+// Function Prototypes
+bool initGL(int argc, char** argv);
+void display(void);
+void keyboard(unsigned char key, int x, int y);
+void keyUp(unsigned char key, int x, int y);
+void handleKeys();
+void mouse(int button, int state, int x, int y);
+void motion(int x, int y);
+void Timer(int value);
 
 // Converting degrees to radians
 float degreesToRadians(float angle)
@@ -95,18 +124,20 @@ float radiansToDegrees(float angle)
 }
 
 // Rotating around point
-void rotateAroundPoint(Matrix4x4 & matrix, const Vector3f & point, float xAngle, float yAngle)
+void rotateAroundPoint(Matrix4x4 & matrix, const Vector3f & point, float angle)
 {
-    // Move to point, rotate, and move back
+	// Move to point, rotate, and move back
 	matrix.translate(point.x, point.y, point.z);
-	matrix.rotate(yAngle, 0, 1, 0);
-	matrix.rotate(xAngle, 1, 0, 0);
+	matrix.rotate(angle, 1, 0, 0);
 	matrix.translate(-point.x, -point.y, -point.z);
 }
 
 // Loading maze from file
 bool loadMaze()
 {
+	maze.clear();
+	totalCoins = 0;
+
 	// Open file
 	std::ifstream file("../models/maze.txt");
 	if(!file)
@@ -119,8 +150,10 @@ bool loadMaze()
 	char c = 0;
 	while(file >> c)
 	{
-		// Convert char to integer
-		maze.push_back(c - '0');
+		// Convert char to integer, count coins, add to matrix
+		int type = c - '0';
+		if(type == 2) totalCoins++;
+		maze.push_back(type);
 	}
 
 	return true;
@@ -152,6 +185,19 @@ bool isTarget(int i, int j)
 	return maze[index] == 2;
 }
 
+// Removing targets
+void removeTarget(int i, int j)
+{
+	// Bound checking
+	if(i < 0 || i > N - 1) return;
+	if(j < 0 || j > M - 1) return;
+	int index = i * M + j;
+	if(index < 0 || index > (int)maze.size()) return;
+
+	// 1 indicates blocks without target
+	maze[index] = 1;
+}
+
 // Loading shaders
 void loadShaders()
 {
@@ -173,6 +219,30 @@ void loadShaders()
 	TextureMapUniformLocation    = glGetUniformLocation(shaderProgramID, "Texture_uniform");
 }
 
+void restart()
+{
+	loadMaze();
+
+	// Reset tank
+	tankPosition = Vector3f(cubeSize * (M - 1), -0.5f, cubeSize * 0);
+	tankDistanceTravelled = 0;
+	tankAngle = -90;
+	tankVelocity = 0;
+	tankFallVelocity = 0;
+	tankFallingTime = 0;
+	tankAccelerating = false;
+	tankDecelerating = false;
+	tankTurningLeft = false;
+	tankTurningRight = false;
+	tankFalling = false;
+
+	// Reset game
+	timeRemaining = 60;
+	collectedCoins = 0;
+	shooting = false;
+	gameOver = false;
+	gameOverMessage.clear();
+};
 
 // Main Program Entry
 int main(int argc, char** argv)
@@ -185,9 +255,7 @@ int main(int argc, char** argv)
 	for(int i = 0 ; i < 256; i++)
 		keyStates[i] = false;
 
-	// Set up your program
-
-	loadMaze();
+	// Load objects
 	cube.loadOBJ("../models/cube.obj");
 	coin.loadOBJ("../models/coin.obj");
 	ball.loadOBJ("../models/ball.obj");
@@ -205,12 +273,12 @@ int main(int argc, char** argv)
 	// Load OpenGL shaders
 	loadShaders();
 
-	tankPosition = Vector3f(cubeSize * (M - 1) * 0.7f, 0, cubeSize * (N - 1));
-	tankAngle = 180;
-	ballPosition = Vector3f(cubeSize * (M - 1) * 0.6f, cubeSize * 0.3f, cubeSize * (N - 1));
+	// Set up camera manipulator with initial turret centering
+	cameraManip.setPanTiltRadius(0, 0, 10);
+	cameraManip.handleMouseMotion(screenWidth / 2, screenHeight / 2);
 
-	// Set up camera manipulator
-	cameraManip.setPanTiltRadius(0.f,0.f,5.f);
+	// Start game
+	restart();
 
 	// Enter main loop
 	glutMainLoop();
@@ -265,25 +333,78 @@ bool initGL(int argc, char** argv)
 	return true;
 }
 
-// Updating tank properties
+// Colliding coins
+void collideCoins(Vector3f position)
+{
+	// For each grid cell
+	for(int i = 0; i < N; i++)
+	for(int j = 0; j < M; j++)
+	{
+		// Ignore cells without coins
+		if(!isTarget(i, j)) continue;
+
+		// Coin position
+		Vector3f coinPosition(cubeSize * j, coinHeight, cubeSize * i);
+
+		// If coin is close to position
+		if((position - coinPosition).length() < 2)
+		{
+			// Remove target
+			removeTarget(i, j);
+			collectedCoins++;
+
+			// Winning condition
+			if(collectedCoins == totalCoins)
+			{
+				gameOver = true;
+				gameOverMessage = "YOU WIN!";
+			}
+		}
+	}
+}
+
+// Updating tank variables
 void updateTank(float timeStep)
 {
 	// Tank direction
 	Vector3f TankDirection(sinf(degreesToRadians(tankAngle)), 0, cosf(degreesToRadians(tankAngle)));
 
-	// Update tank velocity according to acceleration
-	tankVelocity += (tankAcceleration - tankDeceleration) * timeStep;
-	if(tankVelocity > 15) tankVelocity = 15;
-	if(tankVelocity < -15) tankVelocity = -15;
+	// Total tank acceleration according to driving, braking, and friction
+	float totalAcceleration = 0;
+	if(tankAccelerating) totalAcceleration += tankAcceleration;
+	if(tankDecelerating) totalAcceleration -= tankDeceleration;
+	if(tankVelocity < 0) totalAcceleration += tankFriction;
+	if(tankVelocity > 0) totalAcceleration -= tankFriction;
 
-	// Update tank angle
-	tankAngle += tankAngleVelocity * (tankVelocity < 0 ? -1 : 1) * timeStep;
+	// Update tank velocity according to total acceleration
+	tankVelocity += totalAcceleration * timeStep;
+
+	// Limit maximum and minimum velocity
+	if(tankVelocity > tankMaxVelocity) tankVelocity = tankMaxVelocity;
+	if(tankVelocity < -tankMaxVelocity) tankVelocity = -tankMaxVelocity;
+	if(fabsf(tankVelocity) < 1) tankVelocity = 0;
+
+	// Tank angular velocity according to left/right turning
+	float tankOmega = 0;
+	if(tankTurningLeft) tankOmega += tankTurningRate;
+	if(tankTurningRight) tankOmega -= tankTurningRate;
+
+	// Update tank angle according to forward/backward motion
+	if(tankVelocity < 0) tankAngle -= tankOmega * timeStep;
+	if(tankVelocity > 0) tankAngle += tankOmega * timeStep;
 
 	// Update tank falling velocity
-	if(gameOver)
+	if(tankFalling)
 	{
-		const float gravity = -30;
 		tankFallVelocity += gravity * timeStep;
+		tankFallingTime += timeStep;
+
+		// Losing condition
+		if(tankFallingTime > 0.6f)
+		{
+			gameOver = true;
+			gameOverMessage = "YOU LOSE!";
+		}
 	}
 
 	// Update tank position according to movement and falling
@@ -293,31 +414,72 @@ void updateTank(float timeStep)
 	// Update distance travelled
 	tankDistanceTravelled += tankVelocity * timeStep;
 
+	// Collision detection between coins and tank top
+	Vector3f tankTop = tankPosition;
+	tankTop.y += turret.getMeshCentroid().y;
+	collideCoins(tankTop);
+
 	// Convert tank position to maze coordinates
 	int i = (int)floorf(tankPosition.z / cubeSize + 0.5f);
 	int j = (int)floorf(tankPosition.x / cubeSize + 0.5f);
 
 	// If tank position is not over block, it should fall
-	if(!isBlock(i, j)) gameOver = true;
+	if(!isBlock(i, j)) tankFalling = true;
+}
+
+// Updating ball variables
+void updateBall(float timeStep)
+{
+	if(!shooting) return;
+
+	// Falling under gravity
+	ballVelocity.y += gravity * timeStep;
+	ballPosition = ballPosition + ballVelocity * timeStep;
+
+	// End of falling
+	if(ballPosition.y < 0) shooting = false;
+
+	// Collision detection between coins and ball
+	collideCoins(ballPosition);
+}
+
+// Shooting ball
+void shootBall()
+{
+	// One ball at time
+	if(shooting) return;
+
+	// Initial ball velocity in turret direction
+	float turretAngle = radiansToDegrees(cameraManip.getPan()) + 90;
+	float ballAngle = tankAngle + turretAngle;
+	Vector3f ballDirection(sinf(degreesToRadians(ballAngle)), 0, cosf(degreesToRadians(ballAngle)));
+	ballVelocity = ballDirection * ballSpeed;
+
+	// Initial ball position at turret muzzle
+	ballPosition = tankPosition + ballDirection * 4;
+	ballPosition.y += turret.getMeshCentroid().y;
+
+	shooting = true;
 }
 
 // Drawing mesh
 void drawMesh(Mesh & mesh, Matrix4x4 & matrix, GLuint textureID)
 {
-	// View matrix
-	Matrix4x4 m;
-	m.translate(cubeSize * -6, cubeSize * 2, cubeSize * -8);
-	m.rotate(20, 1, 0, 0);
+	// View matrix with camera following tank from fixed distance
+	Matrix4x4 view;
+	view.translate(0, -cameraHeight, -cameraDistance);
+	view.rotate(180 - tankAngle, 0, 1, 0);
+	view.translate(-tankPosition.x, -tankPosition.y, -tankPosition.z);
 
-	// Model matrix
-	m = m * matrix;
+	// Modelview matrix
+	Matrix4x4 modelview = view * matrix;
 
 	// Set modelview matrix
 	glUniformMatrix4fv(
 		MVMatrixUniformLocation, // Uniform location
-		1,                       // Number of Uniforms
-		false,                   // Transpose Matrix
-		m.getPtr());             // Pointer to Matrix Values
+		1,                       // Number of uniforms
+		false,                   // Transpose matrix
+		modelview.getPtr());     // Pointer to matrix values
 
 	// Set texture and draw mesh
 	glBindTexture(GL_TEXTURE_2D, textureID);
@@ -327,7 +489,7 @@ void drawMesh(Mesh & mesh, Matrix4x4 & matrix, GLuint textureID)
 // Drawing cubes
 void drawCubes()
 {
-	// For each cube
+	// For each grid cell
 	for(int i = 0; i < N; i++)
 	for(int j = 0; j < M; j++)
 	{
@@ -335,7 +497,7 @@ void drawCubes()
 		{
 			// Cube position and size
 			Matrix4x4 m;
-			m.translate(cubeSize * j, -cubeSize * 0.5f + 0.5f, cubeSize * i);
+			m.translate(cubeSize * j, -cubeSize * 0.5f, cubeSize * i);
 			m.scale(cubeSize * 0.5f, cubeSize * 0.5f, cubeSize * 0.5f);
 
 			// Draw cube
@@ -347,7 +509,7 @@ void drawCubes()
 // Drawing coins
 void drawCoins()
 {
-	// For each cube
+	// For each grid cell
 	for(int i = 0; i < N; i++)
 	for(int j = 0; j < M; j++)
 	{
@@ -355,7 +517,7 @@ void drawCoins()
 		{
 			// Coin position and size
 			Matrix4x4 m;
-			m.translate(cubeSize * j, coinSize * 6 + 0.5f, cubeSize * i);
+			m.translate(cubeSize * j, coinHeight, cubeSize * i);
 			m.scale(coinSize, coinSize, coinSize);
 
 			// Draw coin
@@ -367,6 +529,8 @@ void drawCoins()
 // Drawing ball
 void drawBall()
 {
+	if(!shooting) return;
+
 	// Ball position and size
 	Matrix4x4 m;
 	m.translate(ballPosition.x, ballPosition.y, ballPosition.z);
@@ -391,65 +555,103 @@ void drawTank()
 
 	// Draw front wheel
 	Matrix4x4 frontWheelMatrix = tankMatrix;
-	rotateAroundPoint(frontWheelMatrix, frontWheel.getMeshCentroid(), wheelAngle, tankAngleVelocity * 0.15f);
+	rotateAroundPoint(frontWheelMatrix, frontWheel.getMeshCentroid(), wheelAngle);
 	drawMesh(frontWheel, frontWheelMatrix, tankTextureID);
 
 	// Draw back wheel
 	Matrix4x4 backWheelMatrix = tankMatrix;
-	rotateAroundPoint(backWheelMatrix, backWheel.getMeshCentroid(), wheelAngle, 0);
+	rotateAroundPoint(backWheelMatrix, backWheel.getMeshCentroid(), wheelAngle);
 	drawMesh(backWheel, backWheelMatrix, tankTextureID);
 
 	// Draw turret
 	Matrix4x4 turretMatrix = tankMatrix;
-	float turretAngle = radiansToDegrees(cameraManip.getPan()) - tankAngle - 90;
+	float turretAngle = radiansToDegrees(cameraManip.getPan()) + 90;
 	turretMatrix.rotate(turretAngle, 0, 1, 0);
 	drawMesh(turret, turretMatrix, tankTextureID);
 }
 
-// Display Loop
+void drawHUD(float x, float y, std::string text)
+{
+	// Position and size
+	glLoadIdentity();
+	glTranslatef(x, y, 0);
+	glScalef(0.0008f, 0.001f, 1);
+	glLineWidth(3);
+
+	// Draw text
+	int length = text.length();
+	for(int i = 0; i < length; i++)
+	{
+		glutStrokeCharacter(GLUT_STROKE_ROMAN, text[i]);
+	}
+}
+
+// Display loop
 void display(void)
 {
 	// Handle keys
 	handleKeys();
 
-	// Set Viewport
+	// Set viewport
 	glViewport(0, 0, screenWidth, screenHeight);
 
 	// Clear screen
 	glClearColor(0.4f, 0.5f, 0.6f, 1);
-	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	// Enable shader
+	// Enable shaders
 	glUseProgram(shaderProgramID);
 
 	// Set perspective projection matrix
 	Matrix4x4 ProjectionMatrix;
-	ProjectionMatrix.perspective(90, 1.0f, 0.01f, 1000.0f);
+	float fieldOfView = 90;
+	float aspectRatio = float(screenWidth) / screenHeight;
+	ProjectionMatrix.perspective(fieldOfView, aspectRatio, 0.1f, 1000);
 	glUniformMatrix4fv(
 		ProjectionUniformLocation,  // Uniform location
-		1,                          // Number of Uniforms
-		false,                      // Transpose Matrix
-		ProjectionMatrix.getPtr()); // Pointer to ModelViewMatrixValues
-
-	// Set light properties
-	glUniform3f(LightPositionUniformLocation, lightPosition.x, lightPosition.y, lightPosition.z);
-	glUniform4f(AmbientUniformLocation, ambient.x, ambient.y, ambient.z, 1.0);
-	glUniform4f(SpecularUniformLocation, specular.x, specular.y, specular.z, 1.0);
-	glUniform1f(SpecularPowerUniformLocation, specularPower);
+		1,                          // Number of uniforms
+		false,                      // Transpose matrix
+		ProjectionMatrix.getPtr()); // Pointer to matrix values
 
 	// Enable texture mapping
 	glUniform1i(TextureMapUniformLocation, 0);
 
-	// Draw all meshes
+	// Set non-shiny light for cubes
+	glUniform3f(LightPositionUniformLocation, lightPosition.x, lightPosition.y, lightPosition.z);
+	glUniform4f(AmbientUniformLocation, ambient.x, ambient.y, ambient.z, 1);
+	glUniform4f(SpecularUniformLocation, 0, 0, 0, 1);
+	glUniform1f(SpecularPowerUniformLocation, specularPower);
+
+	// Draw non-shiny objects
 	drawCubes();
+
+	// Set shiny light for other objects
+	glUniform4f(SpecularUniformLocation, specular.x, specular.y, specular.z, 1);
+
+	// Draw shiny objects
 	drawCoins();
 	drawTank();
-	//drawBall();
+	drawBall();
 
-	// Disable shader
+	// Disable shaders
 	glUseProgram(0);
 
-	// Swap Buffers and post redisplay
+	// Show time and score
+	std::stringstream stream1, stream2;
+	stream1.precision(2);
+	stream1 << std::fixed << "Time: " << timeRemaining;
+	stream2 << "Score: " << collectedCoins << "/" << totalCoins;
+	drawHUD(-0.8f, 0.8f, stream1.str());
+	drawHUD(+0.1f, 0.8f, stream2.str());
+
+	// Show win/lose message
+	if(gameOver)
+	{
+		drawHUD(-0.20f, 0.5f, gameOverMessage);
+		drawHUD(-0.55f, 0.3f, "press Space to continue");
+	}
+
+	// Swap buffers and post redisplay
 	glutSwapBuffers();
 	glutPostRedisplay();
 }
@@ -458,10 +660,10 @@ void display(void)
 void keyboard(unsigned char key, int x, int y)
 {
 	// Quits program when esc is pressed
-	if(key == 27)	// esc key code
-	{
-		exit(0);
-	}
+	if(key == 27) exit(0);
+
+	// Restart game
+	if(key == ' ') restart();
 
 	// Set key status
 	keyStates[key] = true;
@@ -473,36 +675,52 @@ void keyUp(unsigned char key, int x, int y)
 	keyStates[key] = false;
 }
 
-
 // Handle Keys
 void handleKeys()
 {
 	// Tank acceleration and deceleration
-	tankAcceleration = keyStates['w'] ? 50.0f : 0.0f;
-	tankDeceleration = keyStates['s'] ? 50.0f : 0.0f;
+	tankAccelerating = keyStates['w'];
+	tankDecelerating = keyStates['s'];
 
 	// Tank turning
-	tankAngleVelocity = 0;
-	if(keyStates['a']) tankAngleVelocity += 100.0f;
-	if(keyStates['d']) tankAngleVelocity -= 100.0f;
+	tankTurningLeft = keyStates['a'];
+	tankTurningRight = keyStates['d'];
 }
 
-// Mouse Interaction
+// Mouse interaction
 void mouse(int button, int state, int x, int y)
 {
+	// Shoot ball on left mouse button
+	if(button == GLUT_LEFT_BUTTON && state == GLUT_DOWN && !gameOver) shootBall();
 }
 
 // Motion
 void motion(int x, int y)
 {
-	cameraManip.handleMouseMotion(x, y);
+	if(!gameOver) cameraManip.handleMouseMotion(x, y);
 }
 
 // Timer Function
 void Timer(int value)
 {
+	// Update tank and ball
 	float timeStep = 0.01f;
-	updateTank(timeStep);
+	if(!gameOver) updateTank(timeStep);
+	updateBall(timeStep);
+
+	if(!gameOver)
+	{
+		// Update timer
+		timeRemaining -= timeStep;
+
+		// Losing condition
+		if(timeRemaining < 0)
+		{
+			timeRemaining = 0;
+			gameOver = true;
+			gameOverMessage = "YOU LOSE!";
+		}
+	}
 
 	// Call function again after 10 milliseconds
 	glutTimerFunc(10, Timer, 0);
